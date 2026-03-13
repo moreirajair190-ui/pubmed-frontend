@@ -11,6 +11,9 @@ import time
 from typing import List, Dict, Any
 
 client = OpenAI()
+# cache simples em memória
+QUERY_CACHE = {}
+CACHE_TTL = 3600  # 1 hora
 
 app = FastAPI(title="PubMed Backend", version="5.0.0")
 
@@ -39,6 +42,26 @@ class ClinicalAnswerRequest(BaseModel):
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
+
+
+def get_cached_result(question: str):
+
+    key = normalize_text(question).lower()
+
+    if key in QUERY_CACHE:
+        data, timestamp = QUERY_CACHE[key]
+
+        if time.time() - timestamp < CACHE_TTL:
+            return data
+
+    return None
+
+
+def save_cached_result(question: str, result):
+
+    key = normalize_text(question).lower()
+
+    QUERY_CACHE[key] = (result, time.time())
 
 
 def search_pubmed_ids(query: str, max_results: int = 10) -> List[str]:
@@ -512,6 +535,10 @@ def search_pubmed(req: SearchRequest):
 
 
 @app.post("/clinical-answer")
+cached = get_cached_result(req.question)
+
+if cached:
+    return cached
 def clinical_answer(req: ClinicalAnswerRequest):
     plan = layered_pubmed_search(req.question, req.max_results)
     ids = plan["pmids"]
@@ -520,7 +547,10 @@ def clinical_answer(req: ClinicalAnswerRequest):
     articles = rerank_articles(req.question, articles)
 
     if not articles:
-        return {
+save_cached_result(req.question, result)
+
+return result
+        result = {
             "question": req.question,
             "normalized_question": plan["normalized_question"],
             "keywords": plan["keywords"],
