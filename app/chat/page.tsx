@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { createClient } from '@/utils/supabase/client'
 
 type Article = {
   pmid: string
@@ -39,6 +40,8 @@ function studyBadge(studyType: string) {
 }
 
 export default function ChatPage() {
+  const supabase = createClient()
+
   const [question, setQuestion] = useState('')
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
@@ -81,8 +84,24 @@ export default function ChatPage() {
       }
 
       setStage('Gerando resposta clínica...')
-      const data = await res.json()
+      const data: ApiResponse = await res.json()
       setResult(data)
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      if (user) {
+        await supabase.from('chat_history').insert({
+          user_id: user.id,
+          question,
+          normalized_question: data.normalized_question,
+          clinical_summary: data.clinical_summary,
+          pubmed_queries: data.pubmed_queries,
+          article_count: data.count,
+          articles: data.articles,
+        })
+      }
     } catch (err: any) {
       setError(err?.message || 'Erro ao consultar a resposta clínica.')
     } finally {
