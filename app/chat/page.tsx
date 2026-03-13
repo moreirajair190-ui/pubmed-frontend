@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 type Article = {
   pmid: string
@@ -11,32 +11,58 @@ type Article = {
   evidence_score: number
   abstract: string
   url: string
+  final_score?: number
 }
 
 type ApiResponse = {
   question: string
-  pubmed_query: string
+  normalized_question: string
+  keywords: string[]
+  pubmed_queries: string[]
   count: number
   clinical_summary: string
   articles: Article[]
 }
 
+function studyBadge(studyType: string) {
+  const normalized = studyType.toLowerCase()
+
+  if (normalized.includes('meta-analysis')) return 'Meta-analysis'
+  if (normalized.includes('systematic review')) return 'Systematic review'
+  if (normalized.includes('randomized controlled trial')) return 'RCT'
+  if (normalized.includes('clinical trial')) return 'Clinical trial'
+  if (normalized.includes('cohort')) return 'Cohort'
+  if (normalized.includes('case-control')) return 'Case-control'
+  if (normalized.includes('cross-sectional')) return 'Cross-sectional'
+  if (normalized.includes('case')) return 'Case report'
+  return studyType || 'Unspecified'
+}
+
 export default function ChatPage() {
   const [question, setQuestion] = useState('')
   const [loading, setLoading] = useState(false)
+  const [stage, setStage] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<ApiResponse | null>(null)
+  const [expandedPmids, setExpandedPmids] = useState<Record<string, boolean>>({})
+
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL
+
+  const canSubmit = useMemo(() => question.trim().length > 0 && !loading, [question, loading])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!question.trim()) return
+
     setLoading(true)
+    setStage('Interpretando a pergunta...')
     setError('')
     setResult(null)
 
     try {
+      setStage('Buscando artigos no PubMed...')
       const res = await fetch(
-       
-	'https://gpt-pubmed-backend.onrender.com/clinical-answer',
+        `${apiBaseUrl}/clinical-answer`,
         {
           method: 'POST',
           headers: {
@@ -44,7 +70,7 @@ export default function ChatPage() {
           },
           body: JSON.stringify({
             question,
-            max_results: 10,
+            max_results: 5,
           }),
         }
       )
@@ -54,93 +80,223 @@ export default function ChatPage() {
         throw new Error(errorText || 'Falha ao consultar o backend.')
       }
 
+      setStage('Gerando resposta clínica...')
       const data = await res.json()
       setResult(data)
     } catch (err: any) {
       setError(err?.message || 'Erro ao consultar a resposta clínica.')
     } finally {
       setLoading(false)
+      setStage('')
     }
   }
 
-  return (
-    <main className="min-h-screen p-6 max-w-5xl mx-auto">
-      <h1 className="text-3xl font-bold mb-2">Chat PubMed</h1>
-      <p className="text-gray-600 mb-6">
-        Faça uma pergunta médica e o sistema buscará artigos no PubMed e gerará uma resposta clínica.
-      </p>
+  function toggleAbstract(pmid: string) {
+    setExpandedPmids((prev) => ({
+      ...prev,
+      [pmid]: !prev[pmid],
+    }))
+  }
 
-      <form onSubmit={handleSubmit} className="space-y-4 mb-8">
+  return (
+    <main className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mb-8">
+        <p className="mb-3 inline-flex rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-white/70">
+          Chat clínico baseado em evidências
+        </p>
+        <h1 className="text-4xl font-bold tracking-tight">Chat PubMed</h1>
+        <p className="mt-3 max-w-3xl text-white/60">
+          Faça uma pergunta médica. O sistema interpreta a pergunta, gera estratégias de busca,
+          consulta o PubMed e devolve uma resposta clínica baseada nos artigos encontrados.
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="mb-8 rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl shadow-black/20">
+        <label className="mb-3 block text-sm font-medium text-white/80">
+          Pergunta clínica
+        </label>
+
         <textarea
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder="Ex.: tratamento do diabetes tipo 2"
-          className="w-full min-h-32 rounded border p-4"
+          placeholder="Ex.: Qual o papel dos inibidores de SGLT2 em pacientes com diabetes tipo 2 em uso de insulina?"
+          className="min-h-40 w-full rounded-xl border border-white/10 bg-black/40 p-4 text-white outline-none transition placeholder:text-white/30 focus:border-white/30"
           required
         />
 
-        <button
-          type="submit"
-          disabled={loading}
-          className="px-6 py-3 rounded bg-black text-white"
-        >
-          {loading ? 'Analisando artigos...' : 'Buscar resposta clínica'}
-        </button>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="rounded-xl bg-white px-5 py-3 font-medium text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? 'Processando...' : 'Buscar resposta clínica'}
+          </button>
+
+          {loading && (
+            <span className="text-sm text-white/60">
+              {stage}
+            </span>
+          )}
+        </div>
       </form>
 
       {error && (
-        <div className="mb-6 rounded border border-red-300 bg-red-50 p-4 text-red-700">
+        <div className="mb-8 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-300">
           {error}
         </div>
       )}
 
       {result && (
-        <div className="space-y-6">
-          <section className="rounded border p-4">
-            <h2 className="text-xl font-semibold mb-3">Resumo da busca</h2>
-            <p><strong>Pergunta:</strong> {result.question}</p>
-            <p><strong>Query PubMed:</strong> {result.pubmed_query}</p>
-            <p><strong>Artigos encontrados:</strong> {result.count}</p>
-          </section>
-
-<section className="rounded border p-4">
-            <h2 className="text-xl font-semibold mb-3">Resposta clínica</h2>
-            <div className="whitespace-pre-wrap leading-7">
+        <div className="grid gap-6">
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+            <h2 className="mb-4 text-2xl font-semibold">Resposta clínica</h2>
+            <div className="whitespace-pre-wrap leading-8 text-white/90">
               {result.clinical_summary}
             </div>
           </section>
 
-          <section className="space-y-4">
-            <h2 className="text-xl font-semibold">Artigos utilizados</h2>
-
-            {result.articles.map((article) => (
-              <article key={article.pmid} className="rounded border p-4 space-y-2">
-                <h3 className="text-lg font-semibold">{article.title}</h3>
-
-                <div className="text-sm text-gray-700 space-y-1">
-                  <p><strong>PMID:</strong> {article.pmid}</p>
-                  <p><strong>Ano:</strong> {article.year || 'N/A'}</p>
-                  <p><strong>Journal:</strong> {article.journal || 'N/A'}</p>
-                  <p><strong>Tipo de estudo:</strong> {article.study_type}</p>
-                  <p><strong>Score de evidência:</strong> {article.evidence_score}</p>
-                </div>
-
-                <p className="text-sm leading-6">
-                  {article.abstract || 'Sem abstract disponível.'}
+          <section className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+              <h2 className="mb-4 text-xl font-semibold">Pergunta interpretada</h2>
+              <div className="space-y-3 text-white/80">
+                <p>
+                  <span className="font-semibold text-white">Pergunta original:</span>{' '}
+                  {result.question}
                 </p>
+                <p>
+                  <span className="font-semibold text-white">Pergunta normalizada:</span>{' '}
+                  {result.normalized_question}
+                </p>
+                <p>
+                  <span className="font-semibold text-white">Artigos retornados:</span>{' '}
+                  {result.count}
+                </p>
+              </div>
+            </div>
 
-                {article.url && (
-                  <a
-                    href={article.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-block text-blue-600 underline"
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+              <h2 className="mb-4 text-xl font-semibold">Palavras-chave</h2>
+              {result.keywords && result.keywords.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {result.keywords.map((keyword, index) => (
+                    <span
+                      key={`${keyword}-${index}`}
+                      className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-sm text-emerald-300"
+                    >
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-white/60">Nenhuma palavra-chave retornada.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+            <h2 className="mb-4 text-xl font-semibold">Estratégias de busca PubMed</h2>
+            {result.pubmed_queries && result.pubmed_queries.length > 0 ? (
+              <div className="grid gap-3">
+                {result.pubmed_queries.map((query, index) => (
+                  <div
+                    key={`${query}-${index}`}
+                    className="rounded-xl border border-white/10 bg-black/30 p-4"
                   >
-                    Ver no PubMed
-                  </a>
-                )}
-              </article>
-            ))}
+                    <p className="mb-2 text-xs uppercase tracking-wide text-white/40">
+                      Query {index + 1}
+                    </p>
+                    <p className="break-words text-sm leading-7 text-white/80">
+                      {query}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-white/60">Nenhuma query foi exibida.</p>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-xl font-semibold">Artigos utilizados</h2>
+              <span className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/60">
+                {result.articles.length} artigo(s)
+              </span>
+            </div>
+
+            {result.articles.length === 0 ? (
+              <p className="text-white/60">Nenhum artigo foi retornado para esta pergunta.</p>
+            ) : (
+              <div className="grid gap-4">
+                {result.articles.map((article) => {
+                  const expanded = !!expandedPmids[article.pmid]
+                  const abstractText = article.abstract || 'Sem abstract disponível.'
+                  const preview =
+                    abstractText.length > 420 && !expanded
+                      ? `${abstractText.slice(0, 420)}...`
+                      : abstractText
+
+                  return (
+                    <article
+                      key={article.pmid}
+                      className="rounded-2xl border border-white/10 bg-black/30 p-5"
+                    >
+                      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-white">{article.title}</h3>
+                          <p className="mt-1 text-sm text-white/50">
+                            {article.journal || 'Journal não informado'} • {article.year || 'Ano não informado'}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-300">
+                            {studyBadge(article.study_type)}
+                          </span>
+
+                          {typeof article.final_score === 'number' && (
+                            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                              Score {article.final_score}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mb-4 grid gap-2 text-sm text-white/70 sm:grid-cols-2">
+                        <p><span className="font-medium text-white">PMID:</span> {article.pmid}</p>
+                        <p><span className="font-medium text-white">Evidência:</span> {article.evidence_score}</p>
+                      </div>
+
+                      <p className="leading-7 text-white/80">{preview}</p>
+
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        {article.abstract && article.abstract.length > 420 && (
+                          <button
+                            type="button"
+                            onClick={() => toggleAbstract(article.pmid)}
+                            className="rounded-lg border border-white/10 px-3 py-2 text-sm text-white/80 transition hover:bg-white/5"
+                          >
+                            {expanded ? 'Mostrar menos' : 'Ler mais'}
+                          </button>
+                        )}
+
+                        {article.url && (
+                          <a
+                            href={article.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-black transition hover:opacity-90"
+                          >
+                            Ver no PubMed
+                          </a>
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
           </section>
         </div>
       )}
