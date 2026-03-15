@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { useSearchParams } from 'next/navigation'
 
@@ -78,7 +78,7 @@ function CitationText({
   )
 }
 
-export default function ChatPage() {
+function ChatPageContent() {
   const supabase = createClient()
   const searchParams = useSearchParams()
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL
@@ -112,7 +112,11 @@ export default function ChatPage() {
     return () => clearInterval(id)
   }, [loading])
 
-  async function handleSubmit(e?: React.FormEvent, forcedQuestion?: string, forcedMode?: 'standard' | 'pro') {
+  async function handleSubmit(
+    e?: React.FormEvent,
+    forcedQuestion?: string,
+    forcedMode?: 'standard' | 'pro'
+  ) {
     if (e) e.preventDefault()
 
     const currentQuestion = (forcedQuestion ?? question).trim()
@@ -157,9 +161,8 @@ export default function ChatPage() {
 
       const data: ApiResponse = await res.json()
 
-      const assistantId = crypto.randomUUID()
       const assistantMessage: ChatMessage = {
-        id: assistantId,
+        id: crypto.randomUUID(),
         role: 'assistant',
         content: data.answer_text,
         result: data,
@@ -167,13 +170,16 @@ export default function ChatPage() {
 
       setMessages((prev) => [...prev, assistantMessage])
 
+      setTypedAnswer('')
       let i = 0
       const full = data.answer_text
       const timer = setInterval(() => {
-        i += 18
+        i += 28
         setTypedAnswer(full.slice(0, i))
-        if (i >= full.length) clearInterval(timer)
-      }, 12)
+        if (i >= full.length) {
+          clearInterval(timer)
+        }
+      }, 8)
 
       const {
         data: { user },
@@ -332,7 +338,7 @@ export default function ChatPage() {
                     )}
 
                     <CitationText
-                      text={idx === messages.length - 1 && !loading && typedAnswer ? typedAnswer : message.content}
+                      text={idx === messages.length - 1 && typedAnswer ? typedAnswer : message.content}
                       onCitationClick={(index) => {
                         const source = message.result?.source_map?.find((s) => s.index === index) || null
                         setSelectedSource(source)
@@ -496,5 +502,21 @@ export default function ChatPage() {
         </div>
       )}
     </main>
+  )
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-[calc(100vh-73px)] bg-[#f7f9fd]">
+          <div className="mx-auto max-w-5xl px-4 py-16 text-center">
+            <div className="text-3xl font-bold text-zinc-900">Carregando chat...</div>
+          </div>
+        </main>
+      }
+    >
+      <ChatPageContent />
+    </Suspense>
   )
 }
