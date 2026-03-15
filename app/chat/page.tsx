@@ -1,7 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/utils/supabase/client'
+import { useSearchParams } from 'next/navigation'
 
 type SourceMapItem = {
   index: number
@@ -28,10 +29,18 @@ type ApiResponse = {
 }
 
 type ChatMessage = {
+  id: string
   role: 'user' | 'assistant'
   content: string
   result?: ApiResponse
 }
+
+const loadingStages = [
+  'Interpretando a pergunta clínica',
+  'Consultando a base de conhecimento',
+  'Selecionando artigos do PubMed',
+  'Refinando a resposta',
+]
 
 function CitationText({
   text,
@@ -57,7 +66,7 @@ function CitationText({
                 key={n}
                 type="button"
                 onClick={() => onCitationClick(n)}
-                className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-sky-100 px-2 text-xs font-semibold text-sky-700 hover:bg-sky-200"
+                className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-sky-100 px-2 text-xs font-bold text-sky-700 hover:bg-sky-200"
               >
                 {n}
               </button>
@@ -71,25 +80,50 @@ function CitationText({
 
 export default function ChatPage() {
   const supabase = createClient()
+  const searchParams = useSearchParams()
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL
 
-  const [mode, setMode] = useState<'standard' | 'pro'>('standard')
-  const [question, setQuestion] = useState('')
+  const initialQuestion = searchParams.get('q') || ''
+  const initialMode = (searchParams.get('mode') as 'standard' | 'pro') || 'standard'
+
+  const [mode, setMode] = useState<'standard' | 'pro'>(initialMode)
+  const [question, setQuestion] = useState(initialQuestion)
   const [loading, setLoading] = useState(false)
+  const [loadingStage, setLoadingStage] = useState(0)
   const [error, setError] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [selectedSource, setSelectedSource] = useState<SourceMapItem | null>(null)
+  const [typedAnswer, setTypedAnswer] = useState('')
 
   const canSubmit = useMemo(() => question.trim().length > 0 && !loading, [question, loading])
 
-  async function handleSubmit(e?: React.FormEvent, forcedQuestion?: string) {
+  useEffect(() => {
+    if (initialQuestion && messages.length === 0) {
+      handleSubmit(undefined, initialQuestion, initialMode)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!loading) return
+    const id = setInterval(() => {
+      setLoadingStage((prev) => (prev + 1) % loadingStages.length)
+    }, 1300)
+    return () => clearInterval(id)
+  }, [loading])
+
+  async function handleSubmit(e?: React.FormEvent, forcedQuestion?: string, forcedMode?: 'standard' | 'pro') {
     if (e) e.preventDefault()
 
     const currentQuestion = (forcedQuestion ?? question).trim()
+    const currentMode = forcedMode ?? mode
+
     if (!currentQuestion) return
 
     setLoading(true)
+    setLoadingStage(0)
     setError('')
+    setTypedAnswer('')
 
     const historyPayload = messages.map((m) => ({
       role: m.role,
@@ -97,6 +131,7 @@ export default function ChatPage() {
     }))
 
     const optimisticUser: ChatMessage = {
+      id: crypto.randomUUID(),
       role: 'user',
       content: currentQuestion,
     }
@@ -110,7 +145,7 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: currentQuestion,
-          mode,
+          mode: currentMode,
           conversation: historyPayload,
         }),
       })
@@ -122,13 +157,23 @@ export default function ChatPage() {
 
       const data: ApiResponse = await res.json()
 
+      const assistantId = crypto.randomUUID()
       const assistantMessage: ChatMessage = {
+        id: assistantId,
         role: 'assistant',
         content: data.answer_text,
         result: data,
       }
 
       setMessages((prev) => [...prev, assistantMessage])
+
+      let i = 0
+      const full = data.answer_text
+      const timer = setInterval(() => {
+        i += 18
+        setTypedAnswer(full.slice(0, i))
+        if (i >= full.length) clearInterval(timer)
+      }, 12)
 
       const {
         data: { user },
@@ -155,16 +200,20 @@ export default function ChatPage() {
   const latestAssistant = [...messages].reverse().find((m) => m.role === 'assistant')?.result
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#f6f8fc]">
-      <div className="mx-auto max-w-7xl px-6 py-10">
+    <main className="min-h-[calc(100vh-73px)] overflow-x-hidden bg-[radial-gradient(circle_at_top,#eef6ff_0%,#f7f9fd_48%,#f7f9fd_100%)]">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
         <div className="mb-8 text-center">
-          <h1 className="text-5xl font-bold tracking-tight text-sky-700">EvidenceAI</h1>
-          <p className="mt-3 text-lg text-zinc-600">
-            Estudo médico com base principal em material local, validação no PubMed e apoio web no modo Pro.
+          <h1 className="text-5xl font-black tracking-tight sm:text-6xl">
+            <span className="bg-gradient-to-r from-sky-500 via-sky-700 to-indigo-800 bg-clip-text text-transparent">
+              EvidenceIA
+            </span>
+          </h1>
+          <p className="mx-auto mt-3 max-w-3xl text-lg text-zinc-600 sm:text-xl">
+            Pesquisa clínica fundamentada em evidências, indexada por artigos e refinada por IA
           </p>
         </div>
 
-        <div className="mb-8 flex items-center justify-center">
+        <div className="mb-6 flex justify-center">
           <div className="rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
             <div className="flex gap-2">
               <button
@@ -198,20 +247,18 @@ export default function ChatPage() {
 
         <div className="grid gap-6 lg:grid-cols-[1.55fr_0.9fr]">
           <div className="space-y-6">
-            <div className="rounded-[28px] border border-sky-200 bg-white p-4 shadow-sm">
+            <div className="rounded-[28px] border border-sky-200 bg-white p-4 shadow-[0_12px_40px_rgba(15,23,42,0.06)]">
               <form onSubmit={handleSubmit}>
                 <textarea
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Faça sua pergunta médica..."
-                  className="min-h-28 w-full resize-none rounded-2xl border-0 bg-transparent p-3 text-lg outline-none placeholder:text-zinc-400"
+                  className="min-h-28 w-full resize-none rounded-3xl border-0 bg-transparent px-3 py-3 text-lg outline-none placeholder:text-zinc-400"
                 />
 
                 <div className="mt-4 flex items-center justify-between gap-4">
                   <div className="text-sm text-zinc-500">
-                    {mode === 'standard'
-                      ? 'RAG + PubMed + DeepSeek'
-                      : 'RAG + PubMed + web + OpenAI'}
+                    {loading ? loadingStages[loadingStage] : 'Pronto para pesquisar'}
                   </div>
 
                   <button
@@ -233,20 +280,21 @@ export default function ChatPage() {
 
             {messages.length === 0 && (
               <div className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
-                <h2 className="mb-3 text-lg font-semibold text-zinc-900">Sugestões para começar</h2>
+                <h2 className="mb-4 text-lg font-semibold text-zinc-900">Sugestões para começar</h2>
                 <div className="grid gap-3">
                   {[
                     'tratamento da cetoacidose diabética',
-                    'me explique a fisiopatologia da doença de alzheimer',
-                    'diagnóstico diferencial de artrite reumatoide',
+                    'papel da vitamina b12',
+                    'me explique tudo sobre artrite reumatoide',
                   ].map((q) => (
                     <button
                       key={q}
                       type="button"
                       onClick={() => handleSubmit(undefined, q)}
-                      className="rounded-2xl bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
+                      className="flex items-center justify-between rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
                     >
-                      {q}
+                      <span>{q}</span>
+                      <span className="text-xl">⌕</span>
                     </button>
                   ))}
                 </div>
@@ -255,12 +303,8 @@ export default function ChatPage() {
 
             {messages.map((message, idx) => (
               <section
-                key={idx}
-                className={`rounded-3xl border shadow-sm ${
-                  message.role === 'user'
-                    ? 'border-zinc-200 bg-white p-5'
-                    : 'border-zinc-200 bg-white p-6'
-                }`}
+                key={message.id}
+                className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm"
               >
                 {message.role === 'user' ? (
                   <div>
@@ -288,7 +332,7 @@ export default function ChatPage() {
                     )}
 
                     <CitationText
-                      text={message.content}
+                      text={idx === messages.length - 1 && !loading && typedAnswer ? typedAnswer : message.content}
                       onCitationClick={(index) => {
                         const source = message.result?.source_map?.find((s) => s.index === index) || null
                         setSelectedSource(source)
@@ -304,9 +348,10 @@ export default function ChatPage() {
                               key={`${q}-${i}`}
                               type="button"
                               onClick={() => handleSubmit(undefined, q)}
-                              className="rounded-2xl bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
+                              className="flex items-center justify-between rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
                             >
-                              {q}
+                              <span>{q}</span>
+                              <span className="text-xl">⌕</span>
                             </button>
                           ))}
                         </div>
@@ -317,15 +362,35 @@ export default function ChatPage() {
               </section>
             ))}
 
+            {loading && (
+              <div className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm">
+                <div className="mb-3 text-sm font-semibold text-zinc-900">Gerando resposta</div>
+                <div className="space-y-3">
+                  {loadingStages.map((step, i) => (
+                    <div
+                      key={step}
+                      className={`rounded-2xl px-4 py-3 text-sm transition ${
+                        i === loadingStage
+                          ? 'bg-sky-50 text-sky-700'
+                          : 'bg-zinc-50 text-zinc-500'
+                      }`}
+                    >
+                      {step}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {messages.length > 0 && (
-              <div className="sticky bottom-4">
-                <div className="rounded-[28px] border-2 border-sky-200 bg-white p-4 shadow-lg">
+              <div className="sticky bottom-3">
+                <div className="rounded-[28px] border-2 border-sky-200 bg-white p-3 shadow-[0_12px_40px_rgba(15,23,42,0.12)]">
                   <form onSubmit={handleSubmit} className="flex items-center gap-3">
                     <input
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       placeholder="Faça uma pergunta de acompanhamento"
-                      className="h-14 flex-1 rounded-2xl border-0 bg-transparent px-4 text-base outline-none placeholder:text-zinc-400"
+                      className="h-14 min-w-0 flex-1 rounded-2xl border-0 bg-transparent px-4 text-base outline-none placeholder:text-zinc-400"
                     />
 
                     <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-700">
@@ -386,7 +451,7 @@ export default function ChatPage() {
       </div>
 
       {selectedSource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-3xl bg-white p-6 shadow-2xl">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
