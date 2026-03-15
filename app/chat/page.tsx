@@ -3,18 +3,6 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/utils/supabase/client'
 
-type Article = {
-  pmid: string
-  title: string
-  year: string
-  journal: string
-  study_type: string
-  evidence_score: number
-  abstract: string
-  url: string
-  final_score?: number
-}
-
 type SourceMapItem = {
   index: number
   pmid: string
@@ -29,14 +17,20 @@ type SourceMapItem = {
 type ApiResponse = {
   question: string
   normalized_question: string
-  keywords: string[]
-  pubmed_queries: string[]
-  count: number
-  clinical_summary: string
+  specialty: string | null
+  mode: string
+  pubmed_query: string
+  pubmed_count: number
   answer_text: string
   follow_up_questions: string[]
   source_map: SourceMapItem[]
-  articles: Article[]
+  web_used: boolean
+}
+
+type ChatMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  result?: ApiResponse
 }
 
 function CitationText({
@@ -77,34 +71,48 @@ function CitationText({
 
 export default function ChatPage() {
   const supabase = createClient()
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL
 
+  const [mode, setMode] = useState<'standard' | 'pro'>('standard')
   const [question, setQuestion] = useState('')
   const [loading, setLoading] = useState(false)
-  const [stage, setStage] = useState('')
   const [error, setError] = useState('')
-  const [result, setResult] = useState<ApiResponse | null>(null)
-  const [selectedCitation, setSelectedCitation] = useState<number | null>(null)
-
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [selectedSource, setSelectedSource] = useState<SourceMapItem | null>(null)
 
   const canSubmit = useMemo(() => question.trim().length > 0 && !loading, [question, loading])
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!question.trim()) return
+  async function handleSubmit(e?: React.FormEvent, forcedQuestion?: string) {
+    if (e) e.preventDefault()
+
+    const currentQuestion = (forcedQuestion ?? question).trim()
+    if (!currentQuestion) return
 
     setLoading(true)
-    setStage('Interpretando a pergunta...')
     setError('')
-    setResult(null)
-    setSelectedCitation(null)
+
+    const historyPayload = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    const optimisticUser: ChatMessage = {
+      role: 'user',
+      content: currentQuestion,
+    }
+
+    setMessages((prev) => [...prev, optimisticUser])
+    setQuestion('')
 
     try {
-      setStage('Buscando artigos...')
       const res = await fetch(`${apiBaseUrl}/clinical-answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, max_results: 5 }),
+        body: JSON.stringify({
+          question: currentQuestion,
+          mode,
+          conversation: historyPayload,
+        }),
       })
 
       if (!res.ok) {
@@ -112,9 +120,15 @@ export default function ChatPage() {
         throw new Error(errorText || 'Falha ao consultar o backend.')
       }
 
-      setStage('Gerando resposta...')
       const data: ApiResponse = await res.json()
-      setResult(data)
+
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: data.answer_text,
+        result: data,
+      }
+
+      setMessages((prev) => [...prev, assistantMessage])
 
       const {
         data: { user },
@@ -123,63 +137,93 @@ export default function ChatPage() {
       if (user) {
         await supabase.from('chat_history').insert({
           user_id: user.id,
-          question,
+          question: currentQuestion,
           normalized_question: data.normalized_question,
-          clinical_summary: data.answer_text || data.clinical_summary,
-          pubmed_queries: data.pubmed_queries,
-          article_count: data.count,
-          articles: data.articles,
+          clinical_summary: data.answer_text,
+          pubmed_queries: [data.pubmed_query],
+          article_count: data.pubmed_count,
+          articles: data.source_map,
         })
       }
     } catch (err: any) {
-      setError(err?.message || 'Erro ao consultar a resposta clínica.')
+      setError(err?.message || 'Erro ao consultar a resposta.')
     } finally {
       setLoading(false)
-      setStage('')
     }
   }
 
-  const highlightedSource = result?.source_map?.find((s) => s.index === selectedCitation)
+  const latestAssistant = [...messages].reverse().find((m) => m.role === 'assistant')?.result
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#f7f9fc]">
-      <div className="mx-auto max-w-6xl px-6 py-8">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold tracking-tight text-zinc-900">PubMed Chat</h1>
-          <p className="mt-3 max-w-3xl text-zinc-600">
-            Faça uma pergunta médica e receba uma resposta baseada em artigos científicos,
-            com citações no meio do texto e fontes organizadas logo abaixo.
+    <main className="min-h-[calc(100vh-73px)] bg-[#f6f8fc]">
+      <div className="mx-auto max-w-7xl px-6 py-10">
+        <div className="mb-8 text-center">
+          <h1 className="text-5xl font-bold tracking-tight text-sky-700">EvidenceAI</h1>
+          <p className="mt-3 text-lg text-zinc-600">
+            Estudo médico com base principal em material local, validação no PubMed e apoio web no modo Pro.
           </p>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1.5fr_0.9fr]">
+        <div className="mb-8 flex items-center justify-center">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setMode('standard')}
+                className={`rounded-xl px-5 py-3 text-left transition ${
+                  mode === 'standard'
+                    ? 'bg-sky-50 text-sky-700'
+                    : 'bg-white text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                <div className="font-semibold">Standard</div>
+                <div className="text-sm opacity-80">Mais rápido e econômico</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMode('pro')}
+                className={`rounded-xl px-5 py-3 text-left transition ${
+                  mode === 'pro'
+                    ? 'bg-violet-50 text-violet-700'
+                    : 'bg-white text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                <div className="font-semibold">Pro</div>
+                <div className="text-sm opacity-80">Mais detalhado e robusto</div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[1.55fr_0.9fr]">
           <div className="space-y-6">
-            <form
-              onSubmit={handleSubmit}
-              className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm"
-            >
-              <textarea
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ex.: me explique a fisiopatologia da doença de Alzheimer"
-                className="min-h-32 w-full resize-none rounded-2xl border border-transparent bg-transparent p-2 text-lg text-zinc-900 outline-none placeholder:text-zinc-400"
-                required
-              />
+            <div className="rounded-[28px] border border-sky-200 bg-white p-4 shadow-sm">
+              <form onSubmit={handleSubmit}>
+                <textarea
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="Faça sua pergunta médica..."
+                  className="min-h-28 w-full resize-none rounded-2xl border-0 bg-transparent p-3 text-lg outline-none placeholder:text-zinc-400"
+                />
 
-              <div className="mt-4 flex items-center justify-between gap-4">
-                <div className="text-sm text-zinc-500">
-                  {loading ? stage : 'Pergunte em português ou inglês'}
+                <div className="mt-4 flex items-center justify-between gap-4">
+                  <div className="text-sm text-zinc-500">
+                    {mode === 'standard'
+                      ? 'RAG + PubMed + DeepSeek'
+                      : 'RAG + PubMed + web + OpenAI'}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    className="rounded-2xl bg-sky-600 px-5 py-3 font-medium text-white transition hover:bg-sky-700 disabled:opacity-50"
+                  >
+                    {loading ? 'Pesquisando...' : 'Pesquisar'}
+                  </button>
                 </div>
-
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  className="rounded-2xl bg-sky-600 px-5 py-3 font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {loading ? 'Buscando...' : 'Pesquisar'}
-                </button>
-              </div>
-            </form>
+              </form>
+            </div>
 
             {error && (
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
@@ -187,168 +231,205 @@ export default function ChatPage() {
               </div>
             )}
 
-            {result && (
-              <>
-                <section className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
-                  <div className="mb-4 flex flex-wrap items-center gap-3">
-                    <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-medium text-zinc-700">
-                      Resposta baseada em {result.count} artigo(s)
-                    </span>
-                    {result.normalized_question && (
-                      <span className="rounded-full bg-sky-50 px-3 py-1 text-sm text-sky-700">
-                        Pergunta interpretada
-                      </span>
-                    )}
+            {messages.length === 0 && (
+              <div className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
+                <h2 className="mb-3 text-lg font-semibold text-zinc-900">Sugestões para começar</h2>
+                <div className="grid gap-3">
+                  {[
+                    'tratamento da cetoacidose diabética',
+                    'me explique a fisiopatologia da doença de alzheimer',
+                    'diagnóstico diferencial de artrite reumatoide',
+                  ].map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => handleSubmit(undefined, q)}
+                      className="rounded-2xl bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {messages.map((message, idx) => (
+              <section
+                key={idx}
+                className={`rounded-3xl border shadow-sm ${
+                  message.role === 'user'
+                    ? 'border-zinc-200 bg-white p-5'
+                    : 'border-zinc-200 bg-white p-6'
+                }`}
+              >
+                {message.role === 'user' ? (
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                      Pergunta
+                    </div>
+                    <p className="text-lg text-zinc-900">{message.content}</p>
                   </div>
-
-                  <CitationText
-                    text={result.answer_text || result.clinical_summary}
-                    onCitationClick={(index) => setSelectedCitation(index)}
-                  />
-                </section>
-
-                {result.follow_up_questions?.length > 0 && (
-                  <section className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
-                    <h2 className="mb-4 text-lg font-semibold text-zinc-900">Perguntas sugeridas</h2>
-
-                    <div className="grid gap-3">
-                      {result.follow_up_questions.map((q, idx) => (
-                        <button
-                          key={`${q}-${idx}`}
-                          type="button"
-                          onClick={() => setQuestion(q)}
-                          className="rounded-2xl bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
-                        >
-                          {q}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                <section className="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm">
-                  <h2 className="mb-4 text-lg font-semibold text-zinc-900">Como a pergunta foi interpretada</h2>
-
-                  <div className="space-y-4 text-sm text-zinc-700">
-                    <div>
-                      <p className="font-semibold text-zinc-900">Pergunta original</p>
-                      <p>{result.question}</p>
-                    </div>
-
-                    <div>
-                      <p className="font-semibold text-zinc-900">Pergunta normalizada</p>
-                      <p>{result.normalized_question}</p>
-                    </div>
-
-                    <div>
-                      <p className="mb-2 font-semibold text-zinc-900">Palavras-chave</p>
-                      <div className="flex flex-wrap gap-2">
-                        {result.keywords?.map((k, idx) => (
-                          <span
-                            key={`${k}-${idx}`}
-                            className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700"
-                          >
-                            {k}
+                ) : (
+                  <div>
+                    {message.result && (
+                      <div className="mb-4 flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-medium text-zinc-700">
+                          {message.result.mode === 'standard' ? 'Standard' : 'Pro'}
+                        </span>
+                        <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-medium text-emerald-700">
+                          {message.result.pubmed_count} fonte(s) PubMed
+                        </span>
+                        {message.result.web_used && (
+                          <span className="rounded-full bg-violet-50 px-3 py-1 text-sm font-medium text-violet-700">
+                            Web como apoio
                           </span>
-                        ))}
+                        )}
                       </div>
+                    )}
+
+                    <CitationText
+                      text={message.content}
+                      onCitationClick={(index) => {
+                        const source = message.result?.source_map?.find((s) => s.index === index) || null
+                        setSelectedSource(source)
+                      }}
+                    />
+
+                    {message.result?.follow_up_questions?.length ? (
+                      <div className="mt-6">
+                        <div className="mb-3 text-sm font-semibold text-zinc-900">Perguntas sugeridas</div>
+                        <div className="grid gap-3">
+                          {message.result.follow_up_questions.map((q, i) => (
+                            <button
+                              key={`${q}-${i}`}
+                              type="button"
+                              onClick={() => handleSubmit(undefined, q)}
+                              className="rounded-2xl bg-sky-50 px-4 py-3 text-left text-zinc-800 transition hover:bg-sky-100"
+                            >
+                              {q}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </section>
+            ))}
+
+            {messages.length > 0 && (
+              <div className="sticky bottom-4">
+                <div className="rounded-[28px] border-2 border-sky-200 bg-white p-4 shadow-lg">
+                  <form onSubmit={handleSubmit} className="flex items-center gap-3">
+                    <input
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      placeholder="Faça uma pergunta de acompanhamento"
+                      className="h-14 flex-1 rounded-2xl border-0 bg-transparent px-4 text-base outline-none placeholder:text-zinc-400"
+                    />
+
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-700">
+                      {mode === 'standard' ? 'Standard' : 'Pro'}
                     </div>
 
-                    <div>
-                      <p className="mb-2 font-semibold text-zinc-900">Queries usadas no PubMed</p>
-                      <div className="grid gap-2">
-                        {result.pubmed_queries?.map((q, idx) => (
-                          <div key={`${q}-${idx}`} className="rounded-xl bg-zinc-50 p-3 text-zinc-700">
-                            <span className="mr-2 font-semibold text-zinc-500">[{idx + 1}]</span>
-                            {q}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </>
+                    <button
+                      type="submit"
+                      disabled={!canSubmit}
+                      className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-600 text-white transition hover:bg-sky-700 disabled:opacity-50"
+                    >
+                      ↗
+                    </button>
+                  </form>
+                </div>
+              </div>
             )}
           </div>
 
           <aside className="space-y-4">
             <div className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm">
-              <h2 className="mb-4 text-lg font-semibold text-zinc-900">Fontes</h2>
+              <h2 className="mb-4 text-lg font-semibold text-zinc-900">Fontes PubMed</h2>
 
-              {!result || !result.source_map || result.source_map.length === 0 ? (
-                <p className="text-sm text-zinc-500">As fontes aparecerão aqui depois da resposta.</p>
+              {!latestAssistant?.source_map?.length ? (
+                <p className="text-sm text-zinc-500">As fontes PubMed aparecerão aqui após a resposta.</p>
               ) : (
                 <div className="space-y-3">
-                  {result.source_map.map((source) => {
-                    const active = selectedCitation === source.index
-                    return (
-                      <button
-                        key={source.index}
-                        type="button"
-                        onClick={() => setSelectedCitation(source.index)}
-                        className={`w-full rounded-2xl border p-4 text-left transition ${
-                          active
-                            ? 'border-sky-300 bg-sky-50'
-                            : 'border-zinc-200 bg-white hover:bg-zinc-50'
-                        }`}
-                      >
-                        <div className="mb-2 flex items-center gap-2">
-                          <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-sky-100 px-2 text-xs font-semibold text-sky-700">
-                            {source.index}
-                          </span>
-                          <span className="text-xs text-zinc-500">
-                            {source.year || 's/ano'}
-                          </span>
-                        </div>
+                  {latestAssistant.source_map.map((source) => (
+                    <button
+                      key={source.index}
+                      type="button"
+                      onClick={() => setSelectedSource(source)}
+                      className="w-full rounded-2xl border border-zinc-200 bg-white p-4 text-left transition hover:bg-zinc-50"
+                    >
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-sky-100 px-2 text-xs font-semibold text-sky-700">
+                          {source.index}
+                        </span>
+                        <span className="text-xs text-zinc-500">
+                          {source.year || 's/ano'}
+                        </span>
+                      </div>
 
-                        <p className="line-clamp-2 font-medium text-zinc-900">
-                          {source.title}
-                        </p>
+                      <p className="line-clamp-2 font-medium text-zinc-900">
+                        {source.title}
+                      </p>
 
-                        <p className="mt-1 text-xs text-zinc-500">
-                          {source.journal || 'Journal não informado'}
-                        </p>
-                      </button>
-                    )
-                  })}
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {source.journal || 'PubMed'}
+                      </p>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
-
-            {highlightedSource && (
-              <div className="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm">
-                <h3 className="mb-3 text-lg font-semibold text-zinc-900">
-                  Fonte [{highlightedSource.index}]
-                </h3>
-
-                <div className="space-y-3 text-sm text-zinc-700">
-                  <p><span className="font-semibold text-zinc-900">Título:</span> {highlightedSource.title}</p>
-                  <p><span className="font-semibold text-zinc-900">PMID:</span> {highlightedSource.pmid}</p>
-                  <p><span className="font-semibold text-zinc-900">Ano:</span> {highlightedSource.year || 'N/A'}</p>
-                  <p><span className="font-semibold text-zinc-900">Journal:</span> {highlightedSource.journal || 'N/A'}</p>
-                  <p><span className="font-semibold text-zinc-900">Tipo:</span> {highlightedSource.study_type || 'N/A'}</p>
-
-                  <p className="leading-7">
-                    <span className="font-semibold text-zinc-900">Abstract:</span>{' '}
-                    {highlightedSource.abstract || 'Sem abstract disponível.'}
-                  </p>
-
-                  {highlightedSource.url && (
-                    <a
-                      href={highlightedSource.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex rounded-xl bg-sky-600 px-4 py-2 font-medium text-white hover:bg-sky-700"
-                    >
-                      Abrir no PubMed
-                    </a>
-                  )}
-                </div>
-              </div>
-            )}
           </aside>
         </div>
       </div>
+
+      {selectedSource && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+          <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-2xl font-bold text-zinc-900">{selectedSource.title}</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-zinc-500">
+                  {selectedSource.pmid ? <span>PMID {selectedSource.pmid}</span> : null}
+                  {selectedSource.year ? <span>{selectedSource.year}</span> : null}
+                  {selectedSource.journal ? <span>{selectedSource.journal}</span> : null}
+                  {selectedSource.study_type ? <span>{selectedSource.study_type}</span> : null}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedSource(null)}
+                className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-200"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-violet-50 p-4">
+              <div className="mb-2 text-sm font-semibold text-violet-700">Resumo da fonte</div>
+              <p className="leading-7 text-zinc-800">
+                {selectedSource.abstract || 'Sem resumo disponível.'}
+              </p>
+            </div>
+
+            {selectedSource.url && (
+              <div className="mt-5">
+                <a
+                  href={selectedSource.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex rounded-xl bg-sky-600 px-4 py-3 font-medium text-white hover:bg-sky-700"
+                >
+                  Abrir no PubMed
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   )
 }

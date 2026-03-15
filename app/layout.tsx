@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PubMed GPT",
-  description: "Assistente clínico baseado em PubMed e IA",
+  title: "EvidenceAI",
+  description: "Estudo médico avançado com RAG, PubMed e IA",
 };
 
 export default function RootLayout({
@@ -13,20 +13,20 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR">
-      <body className="bg-black text-white antialiased">
+      <body className="bg-[#f6f8fc] text-zinc-900 antialiased">
         <div className="min-h-screen">
-          <header className="border-b border-white/10 bg-black/80 backdrop-blur">
-            <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-              <a href="/" className="text-xl font-bold tracking-tight">
-                PubMed GPT
+          <header className="border-b border-zinc-200 bg-white/90 backdrop-blur">
+            <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+              <a href="/" className="text-xl font-bold tracking-tight text-zinc-900">
+                EvidenceAI
               </a>
 
-              <nav className="flex items-center gap-4 text-sm text-white/80">
-                <a href="/" className="hover:text-white">Início</a>
-                <a href="/chat" className="hover:text-white">Chat</a>
-                <a href="/history" className="hover:text-white">Histórico</a>
-                <a href="/login" className="hover:text-white">Login</a>
-                <a href="/signup" className="hover:text-white">Criar conta</a>
+              <nav className="flex items-center gap-5 text-sm text-zinc-600">
+                <a href="/" className="hover:text-zinc-900">Início</a>
+                <a href="/chat" className="hover:text-zinc-900">Chat</a>
+                <a href="/history" className="hover:text-zinc-900">Histórico</a>
+                <a href="/login" className="hover:text-zinc-900">Login</a>
+                <a href="/signup" className="hover:text-zinc-900">Criar conta</a>
               </nav>
             </div>
           </header>
